@@ -1,0 +1,145 @@
+---
+title: "Finding hidden missing data with tidyr::complete()"
+author: "YOUR NAME HERE"
+date: today
+format:
+  html:
+    toc: true
+    code-fold: true
+execute:
+  echo: true
+  warning: false
+---
+
+<!--
+TO SUBMIT (TIDYVERSE CREATE, due 15-Nov-2026):
+1. Rename this file to  firstname_lastinitial_topic.qmd  (lowercase, underscores), for example
+   nawel_x_tidyr_complete.qmd, and put it in the  vignettes/  folder of your FORK of
+   acatlin/FALL2026TIDYVERSE.
+2. Commit ONLY the .qmd (no .html, no data files), fill in the Initial line of YOUR block in README.md,
+   push, and open a pull request titled  "Initial: Firstname L".
+Delete this comment before you submit.
+-->
+
+## What this vignette shows
+
+Sometimes the rows that are missing from a dataset matter more than the cells that are blank. This vignette uses `tidyr::complete()` to find combinations that don't appear in the data at all, add them back as explicit rows, and see how that changes an analysis. It uses `fish_encounters`, a small dataset that ships with the tidyr package, so there's nothing to download.
+
+```{r setup}
+library(tidyverse)
+```
+
+## The data
+
+`fish_encounters` records tagged fish swimming down a river. Along the river there are 11 monitoring stations, and each row says that a given fish was detected (`seen = 1`) at a given station.
+
+```{r data}
+fish_encounters
+```
+
+The dataset only has a row when a fish was seen. If a fish swam past a station without being detected, that fish and station simply never show up together. That's **implicit** missing data: nothing is marked as missing, the row is just absent.
+
+## How much is missing?
+
+If every fish had been checked at every station, we'd expect one row for each fish and station combination.
+
+```{r count}
+n_fish     <- n_distinct(fish_encounters$fish)
+n_stations <- n_distinct(fish_encounters$station)
+
+tibble(
+  fish             = n_fish,
+  stations         = n_stations,
+  rows_if_complete = n_fish * n_stations,
+  rows_we_have     = nrow(fish_encounters),
+  missing_rows     = n_fish * n_stations - nrow(fish_encounters)
+)
+```
+
+That's 19 fish and 11 stations, so 209 possible combinations, but only 114 rows. **95 combinations are missing.**
+
+## The trap: a wrong answer that looks fine
+
+Say we want to know what share of the fish was detected at each station. The obvious thing is to average the `seen` column:
+
+```{r wrong}
+fish_encounters |>
+  summarise(share_detected = mean(seen), .by = station)
+```
+
+Every station comes out at exactly `1`, meaning 100%. That can't be right, since we know fish went missing along the way. The problem is that `seen` is `1` in every row we have, because the rows for fish that *weren't* detected don't exist, so the average has nothing to bring it down.
+
+## The fix: complete()
+
+`complete()` takes the columns you list, builds every combination of their values, and keeps the rows that already exist. The ones it adds get `NA` unless you say otherwise. Here `fill = list(seen = 0)` makes the new rows say `seen = 0`, which is what we want: "not detected."
+
+```{r complete}
+fish_full <- fish_encounters |>
+  complete(fish, station, fill = list(seen = 0))
+
+fish_full
+```
+
+```{r check}
+nrow(fish_full)            # 19 x 11 = 209
+sum(fish_full$seen == 0)   # the 95 rows that were hidden before
+sum(fish_full$seen == 1)   # the 114 detections we started with
+```
+
+We now have 209 rows: the original 114 detections plus the 95 added rows with `seen = 0`. Nothing was lost.
+
+## The right answer
+
+```{r right}
+station_summary <- fish_full |>
+  summarise(fish_detected = sum(seen),
+            share_detected = mean(seen),
+            .by = station)
+
+station_summary
+```
+
+Now the numbers make sense. All 19 fish were detected at the first two stations, **Release** and **I80_1**. At **Lisbon** the share drops to about 68% (13 of 19 fish), and by the last two stations, **MAE** and **MAW**, only 5 of the 19 fish (about 26%) were detected.
+
+```{r plot}
+ggplot(station_summary, aes(x = station, y = share_detected, group = 1)) +
+  geom_line(color = "#1F4E79") +
+  geom_point(color = "#1F4E79", size = 2) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  labs(title = "Share of tagged fish detected at each station",
+       subtitle = "Stations are in order from upstream to downstream",
+       x = "Station", y = "Fish detected") +
+  theme_minimal()
+```
+
+`station` is a factor in this dataset, with its levels in river order, so `complete()` and `ggplot2` both keep the stations in order without any extra work.
+
+## Bonus: a fish that was missed but not lost
+
+With the full grid we can ask a question the original data can't answer: did any fish get missed at a station but then show up again further downstream? Those would be fish that clearly passed the station but weren't detected.
+
+```{r skipped}
+fish_full |>
+  mutate(position = as.integer(station)) |>
+  mutate(furthest = max(position[seen == 1]), .by = fish) |>
+  filter(seen == 0, position < furthest) |>
+  select(fish, station)
+```
+
+Only one fish fits: **4850** was never detected at **Lisbon**, but it was detected at the stations after it (Rstr, Base_TD, BCE and BCW). So that miss is probably a detection failure and not a real absence.
+
+## A related option
+
+`pivot_wider(names_from = station, values_from = seen, values_fill = 0)` gets you the same information in a wide shape, one row per fish and one column per station, with `0` filling the gaps. Use `complete()` when you want to stay in the long format, and `pivot_wider()` when you want the wide one.
+
+## What to remember
+
+- Missing data isn't always a blank cell. Sometimes it's a row that was never recorded.
+- `complete()` makes those hidden rows explicit, and `fill =` says what value they should get.
+- Check the row count against what you'd expect (`n_distinct()` times `n_distinct()`) before trusting an average.
+
+## AI Use
+
+Anthropic. (2026). *Claude Sonnet 5.5* [Large language model]. https://claude.ai. Accessed October 29, 2026.
+
+I used Claude to help pick the topic, draft the code and the write-up, and to check the numbers in this vignette against the `fish_encounters` data. I reviewed the code and can explain what each step does.
